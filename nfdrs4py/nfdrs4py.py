@@ -267,13 +267,14 @@ class NFDRS4py():
             Day: day of observation (local time, not utc/zulu)
             Hour: hour of observation (local time, not utc/zulu)
             Temp: air temperature, degrees F
-            RH: relative humidity, percent, expressed as value between 0 and 100
+            RH: relative humidity. If RH < 1.1, assumes fraction format else assumes percentage format (1.1-100)
             PPTAmt: precipitation in this hour, inches
             SolarRad: solar radiation, watts per sq meter
             WS: wind speed, miles per hour
             SnowDay: boolean flag for snow day (check FW21 documentation)
         """
-
+        if RH < 1.1:
+            RH *= 100
         self.nfdrs4.Update(int(Year),int(Month),int(Day),int(Hour),float(Temp),float(RH),float(PPTAmt),
                            float(SolarRad),float(WS),bool(SnowDay))
 
@@ -297,7 +298,7 @@ class NFDRS4py():
             Day: day of observation (local time, not utc/zulu)
             Hour: hour of observation (local time, not utc/zulu)
             Temp: air temperature, degrees C
-            RH: relative humidity, percent, expressed as value between 0 and 100
+            RH: relative humidity. If RH < 1.1, assumes fraction format else assumes percentage format (1.1-100)
             PPTAmt: precipitation in this hour, cm
             SolarRad: solar radiation, watts per sq meter
             WS_km_hr: wind speed, km per hour. Must be provided if WS_m_s is None.
@@ -312,6 +313,8 @@ class NFDRS4py():
             WS = WS_m_s * 2.2369362921
         else:
             raise ValueError("Either WS_km_hr or WS_m_s must be provided.")
+        if RH < 1.1:
+            RH *= 100
 
         self.nfdrs4.Update(int(Year),int(Month),int(Day),int(Hour),float(Temp),float(RH),float(PPTAmt),
                            float(SolarRad),float(WS),bool(SnowDay))
@@ -354,7 +357,7 @@ class NFDRS4py():
             Day: day of observation (local time, not utc/zulu)
             Hour: hour of observation (local time, not utc/zulu)
             Temp: air temperature, degrees F
-            RH: relative humidity, percent, expressed as value between 0 and 100
+            RH: relative humidity. If RH < 1.1, assumes fraction format else assumes percentage format (1.1-100)
             PPTAmt: precipitation in this hour, inches
             SolarRad: solar radiation, watts per sq meter
             WS: wind speed, miles per hour
@@ -402,6 +405,83 @@ class NFDRS4py():
 
         for i in range(wx_arr.shape[0]):
             self.update_weather(dt_arr[i, 0], dt_arr[i, 1], dt_arr[i, 2], dt_arr[i, 3], wx_arr[i, 0], wx_arr[i, 1],
+                                wx_arr[i, 2], wx_arr[i, 3], wx_arr[i, 4], wx_arr[i,5])
+
+            results[i, :] = [self.nfdrs4.MC1/100, self.nfdrs4.MC10/100, self.nfdrs4.MC100/100, self.nfdrs4.MC1000/100,
+                             self.nfdrs4.MCHERB/100, self.nfdrs4.MCWOOD/100,
+                             self.nfdrs4.BI, self.nfdrs4.ERC, self.nfdrs4.SC, self.nfdrs4.IC,
+                             self.nfdrs4.m_GSI,self.nfdrs4.KBDI]
+
+        results = pd.DataFrame(results,columns=results_cols)
+
+        return pd.concat([df,results],axis=1)
+
+    def process_df_metric(self,df,
+                   datetime_col:Union[int,str]="DateTime",
+                   temp_col:Union[int,str]="Temperature(C)",
+                   rh_col:Union[int,str]="RelativeHumidity(%)",
+                   precip_col:Union[int,str]="Precipitation(cm)",
+                   srad_col:Union[int,str]="SolarRadiation(W/m2)",
+                   windspeed_col:Union[int,str]="WindSpeed(km/h)",
+                   snowflag_col:Union[int,str]="SnowFlag")->'pd.DataFrame':
+
+        """Process a dataframe or array containing weather data, e.g. in FW21 format.
+
+        Specify column name (str) or position (int) for each required weather variable.
+
+        Required columns:
+            Year: year of observation (local time, not utc/zulu)
+            Month: month of observation (local time, not utc/zulu)
+            Day: day of observation (local time, not utc/zulu)
+            Hour: hour of observation (local time, not utc/zulu)
+            Temp: air temperature, degrees C
+            RH: relative humidity. If RH < 1.1, assumes fraction format else assumes percentage format (1.1-100)
+            PPTAmt: precipitation in this hour, cm
+            SolarRad: solar radiation, watts per sq meter
+            WS: wind speed, km per hour
+            SnowDay: boolean flag for snow day (check FW21 documentation)"""
+
+        import pandas as pd
+        import numpy as np
+
+        try:
+            dt_series = pd.to_datetime(df.iloc[:, datetime_col])
+        except:
+            dt_series = pd.to_datetime(df[datetime_col])
+
+        try:
+            wx = df.iloc[:, [temp_col, rh_col, precip_col, srad_col, windspeed_col, snowflag_col]]
+        except:
+            wx = df[[temp_col, rh_col, precip_col, srad_col, windspeed_col, snowflag_col]]
+
+        try:
+            try:
+                wx_arr = wx.to_numpy()
+            except:
+                wx_arr = wx.to_array()
+        except:
+            wx_arr = np.array(wx)
+
+        dt_arr = np.stack([
+            dt_series.dt.year,
+            dt_series.dt.month,
+            dt_series.dt.day,
+            dt_series.dt.hour,
+        ]).T
+
+        if not ((wx_arr.shape[0]==df.shape[0]) and (wx_arr.shape[1]==6) and
+                (dt_arr.shape[0]==df.shape[0]) and (dt_arr.shape[1]==4)):
+            raise TypeError("Could not cast input table to numpy arrays. Try casting to pandas.DataFrame first.")
+
+        #Prep output array
+        results_cols = ['dmc_1_hr', 'dmc_10_hr', 'dmc_100_hr', 'dmc_1000_hr', 'lmc_herb', 'lmc_woody',
+                        'burning_index', 'energy_release_component', 'spread_component', 'ignition_component',
+                        'growing_season_index','kb_drought_index']
+
+        results = np.zeros([wx_arr.shape[0],len(results_cols)],float)
+
+        for i in range(wx_arr.shape[0]):
+            self.update_weather_metric(dt_arr[i, 0], dt_arr[i, 1], dt_arr[i, 2], dt_arr[i, 3], wx_arr[i, 0], wx_arr[i, 1],
                                 wx_arr[i, 2], wx_arr[i, 3], wx_arr[i, 4], wx_arr[i,5])
 
             results[i, :] = [self.nfdrs4.MC1/100, self.nfdrs4.MC10/100, self.nfdrs4.MC100/100, self.nfdrs4.MC1000/100,
